@@ -1,82 +1,83 @@
 name: CD
 
-on:
-  push:
-    tags: 'v*'
+on: [push]
 
-  workflow_dispatch:
-
-env:
-  BUILD_FOLDER_PATH: bin
-
-jobs:  
-  netcorebuild:
+jobs:
+  build:
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v2
 
-    - name: DotNET Core Setup
-      uses: actions/setup-dotnet@v1
-      with:
-        dotnet-version: '3.1.x'
-    
-    - name: DotNET Core Build
+    - name: Mono Build
       run: |
-        chmod +x netcorebuild.sh && ./netcorebuild.sh "$BUILD_FOLDER_PATH"
-
-        tar -cf solution.tar LaboratoryWork.sln Project
+        chmod +x build.sh && ./build.sh
         
     - name: Upload Artifacts
       uses: actions/upload-artifact@v2
       with:
-        name: solution
-        path: "${{ env.BUILD_FOLDER_PATH }}/solution.tar"
+        name: program
+        path: main.exe
         retention-days: 1
-  
-  publish:
+
+  lint:
     runs-on: ubuntu-latest
-    needs: netcorebuild
+    needs: build
 
     steps:
     - uses: actions/checkout@v2
 
-    - name: Download Build Artifacts
+    - name: Markdown Check
+      run: |
+        sudo chown -R $(whoami) /usr/local/bin /usr/local/lib /usr/local/include /usr/local/share
+        npm install -g markdownlint-cli
+        markdownlint *.md
+    - name: Shell Check
+      if: always()
+      run: |
+        sudo apt-get install shellcheck
+        shellcheck *.sh
+      
+    - name: Download Artifacts
       uses: actions/download-artifact@v2
       with:
-        name: solution
-        path: ${{ env.BUILD_FOLDER_PATH }}
-    
-    - name: Unarchive Artifacts
-      run: |
-        cd "$BUILD_FOLDER_PATH"
-        tar -xf solution.tar
-        rm -f solution.tar
-
-    - name: Convert Flowchart
+        name: program
+    - name: CSharp Check
+      if: always()
       run: |
         sudo apt update
-        sudo apt-get install -y libappindicator3-1
-        
-        sudo apt -y install wget
-        wget https://github.com/jgraph/drawio-desktop/releases/download/v12.3.2/draw.io-amd64-12.3.2.deb
-        sudo dpkg -i draw.io-amd64-12.3.2.deb
-        sudo apt -y -f install
-        
-        export DISPLAY=:1
-        xvfb-run -a drawio -a -x -o "$BUILD_FOLDER_PATH/flowchart.pdf" flowchart.drawio --no-sandbox --headless --disable-gpu
-    
+        sudo apt-get install gendarme
+        gendarme -- *.exe
+  
+  publish:
+    runs-on: ubuntu-latest
+    needs: lint
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Download Artifacts
+      uses: actions/download-artifact@v2
+      with:
+        name: program
+    - name: Convert Flowchart
+      run: |
+        sudo mkdir /run/user/1001
+        sudo chmod 777 /run/user/1001
+        sudo apt install snapd
+        sudo snap install drawio
+        drawio -x -o flowchart.pdf flowchart.drawio 
     - name: Archive
       run: |
-        cd "$BUILD_FOLDER_PATH"
-        tar -cf release.tar *
+        tar -cf release.tar main.exe flowchart.pdf
     - name: Environment Variable Setup
       run: echo "RELEASE_VERSION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
-    - name: Publish Build to GitHub
+
+    - name: Publish to GitHub
       uses: "marvinpinto/action-automatic-releases@latest"
       with:
         repo_token: "${{ secrets.GITHUB_TOKEN }}"
         automatic_release_tag: "${{ env.RELEASE_VERSION }}"
         prerelease: false
         title: "${{ env.RELEASE_VERSION }} Build"
-        files: ${{ env.BUILD_FOLDER_PATH }}/release.tar
+        files: release.tar
